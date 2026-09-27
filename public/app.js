@@ -4,37 +4,36 @@
    ========================================================================= */
 
 // Same-origin by default (the Express server serves this file itself).
-// If you ever run the frontend separately from the backend, point this at
-// the backend's URL instead, e.g. 'http://localhost:3000'.
+// Dynamic API base: Use relative path by default to prevent CORS/redirect issues
 const API_BASE = "";
 
-const branchIcons = {
-  CSE: `<svg viewBox="0 0 24 24" stroke-width="1.4"><rect x="7" y="7" width="10" height="10" rx="1"/><path d="M9 3v4M15 3v4M9 17v4M15 17v4M3 9h4M3 15h4M17 9h4M17 15h4"/></svg>`,
-  AIDS: `<svg viewBox="0 0 24 24" stroke-width="1.4"><circle cx="7" cy="7" r="2.4"/><circle cx="17" cy="7" r="2.4"/><circle cx="12" cy="17" r="2.4"/><path d="M9 8.3L14.5 15.3M15 8.3L9.5 15.3M9.4 7h5.2"/></svg>`,
-  "E&TC": `<svg viewBox="0 0 24 24" stroke-width="1.4"><path d="M12 3v6"/><circle cx="12" cy="11" r="2"/><path d="M6 21c0-4 2.7-6.5 6-6.5S18 17 18 21"/><path d="M4 3c2 2 2 5 0 7M20 3c-2 2-2 5 0 7"/></svg>`,
-  IT: `<svg viewBox="0 0 24 24" stroke-width="1.4"><rect x="3" y="4" width="18" height="12" rx="1"/><path d="M8 20h8M12 16v4"/></svg>`,
-  CE: `<svg viewBox="0 0 24 24" stroke-width="1.4"><rect x="4" y="4" width="16" height="16" rx="1"/><circle cx="9" cy="9" r="1.6"/><circle cx="15" cy="15" r="1.6"/><path d="M9 10.6V14a1 1 0 0 0 1 1h3.4M15 13.4V10a1 1 0 0 0-1-1H9.6"/><path d="M7 1v3M17 1v3M7 20v3M17 20v3M1 7h3M1 17h3M20 7h3M20 17h3"/></svg>`
-};
-
-let branches = [];
-let currentBranch = "CSE";
-let currentPeriod = "daily";
-let currentRole = "student";
-let chart = null;
-
-/* ---------------- tiny fetch helper ---------------- */
+/* ---------------- tiny fetch helper with timeout ---------------- */
 async function api(path, options = {}) {
-  const res = await fetch(API_BASE + path, {
-    ...options,
-    headers: {
-      "Content-Type": "application/json",
-      "X-Role": currentRole,
-      ...(options.headers || {})
+  const url = path.startsWith("http") ? path : `${API_BASE}${path}`;
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 15000);
+
+  try {
+    const res = await fetch(url, {
+      ...options,
+      signal: options.signal || controller.signal,
+      headers: {
+        "Content-Type": "application/json",
+        "X-Role": currentRole,
+        ...(options.headers || {})
+      }
+    });
+    clearTimeout(timeoutId);
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || `Request failed (${res.status})`);
+    return data;
+  } catch (err) {
+    clearTimeout(timeoutId);
+    if (err.name === "AbortError") {
+      throw new Error("Request timed out (server took too long to respond). Please try again.");
     }
-  });
-  const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(data.error || `Request failed (${res.status})`);
-  return data;
+    throw err;
+  }
 }
 
 /* ---------------- branches & hero stats ---------------- */
@@ -244,6 +243,10 @@ async function handleModalSubmit(e) {
   const roll = document.getElementById("modalRoll").value.trim();
   const branch = document.getElementById("modalBranch").value;
 
+  if (!selectedRole) {
+    alert("Please select your role (Student or Faculty) before continuing.");
+    return;
+  }
   if (!name) {
     alert("Please enter your full name.");
     return;
@@ -253,27 +256,38 @@ async function handleModalSubmit(e) {
     return;
   }
 
+  // Pre-fill form inputs in the dashboard with user credentials
+  const stuName = document.getElementById("stuName");
+  const stuRoll = document.getElementById("stuRoll");
+  const stuBranch = document.getElementById("stuBranch");
+  if (stuName) stuName.value = name;
+  if (stuRoll && roll) stuRoll.value = roll;
+  if (stuBranch) stuBranch.value = branch;
+
   try {
     if (selectedRole === "student") {
       if (!roll) {
         alert("Please enter your roll number.");
         return;
       }
-      await api("/api/roster/students", {
-        method: "POST",
-        body: JSON.stringify({ name, roll, branch }),
-      });
+      try {
+        await api("/api/roster/students", {
+          method: "POST",
+          body: JSON.stringify({ name, roll, branch }),
+        });
+      } catch (apiErr) {
+        console.warn("Student registration notice:", apiErr);
+      }
     }
 
-    // HIDE MODAL FIRST so the user isn't stuck
+    // Hide modal so user can proceed
     roleModal.style.display = "none";
 
-    // Then set the role and load data in the background
+    // Set role and load data in the background
     await setRole(selectedRole);
   } catch (err) {
     console.error("Login error:", err);
     alert("Login failed: " + err.message);
-    // Show modal again if it failed
     roleModal.style.display = "flex";
   }
 }
